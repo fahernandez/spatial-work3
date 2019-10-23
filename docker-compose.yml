@@ -1,0 +1,7 @@
+version: '2'
+services:
+    spatial-work3:
+        build: .
+        image: fahernandez/spatial-work3:latest
+        ports:
+            - '8787:8787'

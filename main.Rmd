@@ -1,0 +1,208 @@
+---
+title: "Universidad de Costa Rica <br> Estadística Espacial"
+subtitle: "Tarea 3"
+author: "Fabián Hernández"
+output: 
+    html_document:
+      fig_caption: true
+      theme: cerulean
+      highlight: tango
+---
+
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"logo.png\" style=\"float: right;width: 250px;\"/>')
+   });
+</script>
+
+# {.tabset .tabset-fade .tabset-pills}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment=" ",cache=T)
+
+library(sf)
+library(spData)
+library(tidyverse)
+library(spDataLarge)
+library(tmap)
+library(rgdal)
+library(maptools)
+library(raster)
+library(ggplot2)
+library(ggspatial)
+library(spatstat)
+library(lattice)
+library(georob)
+library(multcomp)
+```
+
+Primeramente se carga el set de datos que corresponde a la concentración de metales pesados cerca del río Meuse cerca de la villa de Stein(Municipio en los Paises Bajos). La base cuenta con 155 observaciones y 15 variables, siendo las más importantes las relacionadas a la concentración de los metales pesados.
+
+```{r, echo=TRUE}
+data(meuse, package="sp")
+levels(meuse$ffreq) <- paste("ffreq", levels(meuse$ffreq), sep="")
+levels(meuse$soil) <- paste("soil", levels(meuse$soil), sep="")
+str(meuse)
+```
+
+La idea con este gráfico es representar de manera visual la asociación que puede existir entre la concentración de zinc, la frecuencia de desbordamiento y el tipo de suelo de manera espacial, se usa un simbolo para representar los 6 factores de estas variable.
+```{r, echo=TRUE}
+palette(trellis.par.get("superpose.symbol")$col)
+plot(zinc~dist, meuse, pch=as.integer(ffreq), col=soil)
+legend("topright", col=c(rep(1, nlevels(meuse$ffreq)), 1:nlevels(meuse$soil)),
+pch=c(1:nlevels(meuse$ffreq), rep(1, nlevels(meuse$soil))), bty="n",
+legend=c(levels(meuse$ffreq), levels(meuse$soil)))
+```
+
+Esta parte es muy importante, ya que de la figura pasada se nota que la relación entre la concentración de zinc y la distancia no es lineal, entonces se hace una transformación sobre la variable zinc y la variable distancia para corregir el problema de no linealidad. Este detalle es de suma importancia si el objetivo de este estudio fuera intrepretar coeficientes, ya que estas transformaciones tendrían que tomarse en cuenta. 
+```{r, echo=TRUE}
+xyplot(log(zinc)~sqrt(dist) | ffreq, meuse, groups=soil, panel=function(x, y, ...){
+panel.xyplot(x, y, ...)
+panel.loess(x, y, ...)
+panel.lmline(x, y, lty="dashed", ...)
+}, auto.key=TRUE)
+```
+
+
+Luego de hechas las transformaciones, se calcula el modelo. Es importante resaltar que todos los coeficientes dieron significativos (significancia de 5%). No se menciona porqué el autor deja por fuera la variable de tipo de suelo, sin embargo, al incluirla al modelo el coeficiente no da signficativo.
+```{r, echo=TRUE}
+r.lm <- lm(log(zinc)~sqrt(dist)+ffreq, meuse)
+summary(r.lm)
+```
+
+Además, el autor comprueba los supuestos del modelo, como si se tratase un modelo lineal estándar. Ninguno de los supuestos de la regresión lineal es violado( al menos de manera visual, los supuestos de normalidad, junto a otros supuestos no son evaluados directamente).
+```{r, echo=TRUE}
+op <- par(mfrow=c(2, 2)); plot(r.lm); par(op)
+```
+
+
+En este gráfico el autor muestra los variogramas de los residuales por cada una de las direcciones: N-S, NE-SW,
+E-W, SE-NW. En clase vimos un gráfico similar pero con cada uno de los variogramas como facetas. La idea con este plot, es ver si los variogramas son dependientes espacialmente.
+```{r, echo=TRUE}
+plot(sample.variogram(residuals(r.lm), locations=meuse[, c("x","y")],
+lag.dist.def=100, max.lag=2000, xy.angle.def=c(0, 22.5, 67.5, 112.5, 157.5, 180),
+estimator="matheron"), type="l",
+main="sample variogram of residuals log(zinc)~sqrt(dist)+ffreq")
+```
+
+
+El autor para completar el ejercicio de análisis exploratorio, muestra el mismo variograma pero sin tomar en cuenta la dirección y calcula un modelo teoríco que asemeja al variograma calculado. No se menciona en esta sección como se hizo el calculo de los parámetros, ya que por ejemplo se usa un modelo de variograma muy específico.
+```{r, echo=TRUE}
+plot(r.sv <- sample.variogram(residuals(r.lm), locations=meuse[, c("x","y")],
+lag.dist.def=100, max.lag=2000,
+estimator="matheron"), type="l",
+main="sample variogram of residuals log(zinc)~sqrt(dist)+ffreq")
+lines(r.sv.spher <- fit.variogram.model(r.sv, variogram.mode="RMspheric",
+param=c(variance=0.1, nugget=0.05, scale=1000)))
+summary(r.sv.spher)
+```
+
+Se hace el mismo modelo pero usando el Robust Fitting, que según su documentación es usado cuando la data geoespacial esta contaminada por outliers. Sin embargo, no se menciona si este es el caso para estos datos. Al igual que el modelo lineal, todos los coeficientes dan significativos y no hay diferencias tan grandes entre los coeficientes estimados ni los errores estándares. De igual manera no se da demasiado detalle sobre la escogencia de los parámetros del variograma.
+```{r, echo=TRUE}
+r.georob.m0.spher.reml <- georob(log(zinc)~sqrt(dist)+ffreq, meuse, locations=~x+y,
+variogram.model="RMspheric", param=c(variance=0.1, nugget=0.05, scale=1000),
+tuning.psi=1000)
+summary(r.georob.m0.spher.reml)
+```
+
+En esta sección, el autor usa la función profilelogLik para comprobar que el valor de escala utilizado de 1000 representa realmente un máximo global. Sin embargo, sigue sin hablarse sobre la escogencia del valor del nugget, ni la varianza.
+```{r, echo=TRUE}
+r.prfl.m0.spher.reml.scale <- profilelogLik(r.georob.m0.spher.reml,
+values=data.frame(scale=seq(500, 5000, by=50)))
+plot(loglik~scale, r.prfl.m0.spher.reml.scale, type="l")
+abline(v=coef(r.georob.m0.spher.reml, "variogram")["scale"], lty="dashed")
+abline(h=r.georob.m0.spher.reml$loglik - 0.5*qchisq(0.95, 1), lty="dotted")
+```
+
+Se gráfica la varianza y el nugget en función de la escala utilizada. Esto da una visión un poco más clara de porque se usaron los parámetros de 0.05 el nugget y 0.1 la varianza.
+```{r, echo=TRUE}
+op <- par(mfrow=c(1,2), cex=0.66)
+plot(variance~scale, r.prfl.m0.spher.reml.scale, ylim=c(0, max(variance)), type="l")
+plot(nugget~scale, r.prfl.m0.spher.reml.scale, ylim=c(0, max(nugget)), type="l")
+par(op)
+```
+
+Se usa la prueba de Wald para modelos anidados, comparando un modelo con y sin la frecuencia como variable predictora, dando no significativo, prefiriendose el modelo con la frecuencia sobre el modelo sin la frecuencia. Recalcando la dependencia del modelo con la distancia y la frecuencia.
+```{r, echo=TRUE}
+waldtest(r.georob.m0.spher.reml, .~.-ffreq)
+```
+
+
+También el autor usa la función glht del paquete multcomp para comparar al mismo tiempo todos los parámetros del modelo lineal.
+```{r, echo=TRUE}
+summary(glht(r.georob.m0.spher.reml,
+linfct = mcp(ffreq = c("ffreq1 - ffreq2 = 0", "ffreq1 - ffreq3 = 0",
+"ffreq2 - ffreq3 = 0"))))
+```
+
+También se verifica que la interacción entre la distancia y la frecuencia no mejora el modelo, también usando la prueba de Wald para modelos anidados.
+```{r, echo=TRUE}
+waldtest(r.georob.m0.spher.reml, .~.+sqrt(dist):ffreq)
+```
+
+El mismo resultado de no significancia se obtiene para el tipo de suelo.
+```{r, echo=TRUE}
+ waldtest(r.georob.m0.spher.reml, .~.+soil)
+```
+
+Se usa la función de step(step-wise) para seleccionar el mejor modelo según el criterio del AIC, obteniendose los mismos resultados anteriores en cuanto a significancia de los coeficientes.
+```{r, echo=TRUE}
+step(r.georob.m0.spher.reml, scope=log(zinc)~ffreq*sqrt(dist)+soil)
+```
+
+Se ejecuta el mismo procedimiento de selección de modelos pero haciendo la restimación de los parámetros para cada modelo evaluado (lo cúal lo hace más lento.) 
+```{r, echo=TRUE}
+step(r.georob.m0.spher.reml, scope=log(zinc)~ffreq*sqrt(dist)+soil,fixed.add1.drop1=FALSE)
+```
+
+Se vuelve a calcular el modelo pero otra vez usando el método de máxima verosimilitud.
+```{r, echo=TRUE}
+r.georob.m0.spher.ml <- update(r.georob.m0.spher.reml, control=control.georob(ml.method="ML"))
+```
+
+Se nota que aunque son los mismo modelos, los métodos de estimación hace que la estimación del AIC sea diferente.
+```{r, echo=TRUE}
+extractAIC(r.georob.m0.spher.reml, REML=TRUE)
+extractAIC(r.georob.m0.spher.ml)
+```
+
+También, se usa validación cruzada para realizar la comparación de los modelos, obteniendose medidas de comparación de errores como: me, mede, rmse, made, qne, msse, medsse.
+```{r, echo=TRUE}
+r.cv.m0.spher.reml <- cv(r.georob.m0.spher.reml, seed=3245, lgn=TRUE)
+r.georob.m1.spher.reml <- update(r.georob.m0.spher.reml, .~.-ffreq)
+r.cv.m1.spher.reml <- cv(r.georob.m1.spher.reml, seed=3245, lgn=TRUE)
+summary(r.cv.m0.spher.reml)
+summary(r.cv.m1.spher.reml)
+```
+
+Se muestran algunos gráficos para el diagnóstico comparativo visual entre el modelo con y sin la frecuencia de inundación. El modelo más simple parece dar predicciones más simples, además de que tiene mejores medidas de comparación de errores como el rmse.
+```{r, echo=TRUE}
+op <- par(mfrow=c(3,2))
+plot(r.cv.m1.spher.reml, "sc")
+plot(r.cv.m0.spher.reml, "sc", add=TRUE, col=2)
+abline(0, 1, lty="dotted")
+legend("topleft", pch=1, col=1:2, bty="n",
+legend=c("log(zinc)~sqrt(dist)", "log(zinc)~sqrt(dist)+ffreq"))
+plot(r.cv.m1.spher.reml, "lgn.sc"); plot(r.cv.m0.spher.reml, "lgn.sc", add=TRUE, col=2)
+abline(0, 1, lty="dotted")
+plot(r.cv.m1.spher.reml, "hist.pit")
+plot(r.cv.m0.spher.reml, "hist.pit", col=2)
+plot(r.cv.m1.spher.reml, "ecdf.pit")
+plot(r.cv.m0.spher.reml, "ecdf.pit", add=TRUE, col=2)
+abline(0, 1, lty="dotted")
+plot(r.cv.m1.spher.reml, "bs")
+plot(r.cv.m0.spher.reml, add=TRUE, "bs", col=2)
+par(op)
+```
+
+Finalmente, se termina con el diagnostico de residuales y el variograma para el modelo realizado estimado con REML(azul) y ML(magenta). No se encuenta ninguna violación grave a los supuestos.
+```{r, echo=TRUE}
+op <- par(mfrow=c(2,2), cex=0.66)
+plot(r.georob.m0.spher.reml, "ta"); abline(h=0, lty="dotted")
+plot(r.georob.m0.spher.reml, "qq.res"); abline(0, 1, lty="dotted")
+plot(r.georob.m0.spher.reml, "qq.ranef"); abline(0, 1, lty="dotted")
+plot(r.georob.m0.spher.reml, lag.dist.def=100, max.lag=2000)
+lines(r.georob.m0.spher.ml, col=2); lines(r.sv.spher, col=3)
+par(op)
+```
